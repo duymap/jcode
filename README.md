@@ -24,7 +24,7 @@ jcode connects to local model providers like **LM Studio** and **Ollama** to giv
 
 ## Demo
 
-![jcode demo](https://raw.githubusercontent.com/duymap/jcode/main/jcode.mp4)
+<video src="https://github.com/duymap/jcode/raw/main/jcode.mp4" controls width="100%"></video>
 
 ## Architecture
 
@@ -52,7 +52,9 @@ com.jcode
 │   └── FindFilesTool       Glob-based file discovery
 │
 ├── tui/
-│   └── AppRunner          Terminal UI: banner, line reader, streaming output
+│   ├── AppRunner          Terminal UI: banner, line reader, streaming output
+│   ├── Spinner            Animated spinner for LLM thinking & tool execution
+│   └── DiffRenderer       ANSI-colored diff output for edit/write tools
 │
 └── extensions/
     └── PlanningExtension  Generates execution plans via reasoning model
