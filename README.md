@@ -24,7 +24,7 @@ jcode connects to local model providers like **LM Studio** and **Ollama** to giv
 
 ## Demo
 
-<video src="https://github.com/duymap/jcode/raw/main/jcode.mp4" controls width="100%"></video>
+![jcode demo](jcode.gif)
 
 ## Architecture
 
