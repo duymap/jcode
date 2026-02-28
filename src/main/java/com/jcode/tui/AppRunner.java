@@ -1,10 +1,7 @@
 package com.jcode.tui;
 
 import com.jcode.AgentSession;
-import org.jline.reader.EndOfFileException;
-import org.jline.reader.LineReader;
-import org.jline.reader.LineReaderBuilder;
-import org.jline.reader.UserInterruptException;
+import org.jline.reader.*;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
@@ -81,9 +78,50 @@ public class AppRunner {
             out.println();
             out.flush();
 
+            // Slash command completer — shows menu when user types "/"
+            Completer slashCompleter = (reader, line, candidates) -> {
+                String buf = line.line();
+                if (buf.startsWith("/")) {
+                    String prefix = buf.trim();
+                    String[][] commands = {
+                        {"/help",  "Show available commands"},
+                        {"/clear", "Clear conversation and start fresh"},
+                        {"/exit",  "Exit jcode"},
+                    };
+                    for (String[] entry : commands) {
+                        if (entry[0].startsWith(prefix)) {
+                            candidates.add(new Candidate(
+                                entry[0], entry[0], null, entry[1], null, null, true));
+                        }
+                    }
+                }
+            };
+
             LineReader lineReader = LineReaderBuilder.builder()
                     .terminal(terminal)
+                    .completer(slashCompleter)
+                    .option(LineReader.Option.AUTO_LIST, true)
+                    .option(LineReader.Option.LIST_AMBIGUOUS, true)
+                    .option(LineReader.Option.AUTO_MENU, true)
+                    .option(LineReader.Option.LIST_PACKED, false)
+                    .option(LineReader.Option.AUTO_MENU_LIST, true)
+                    .option(LineReader.Option.GROUP_PERSIST, true)
                     .build();
+
+            // Style: remove bright-magenta background from completion menu
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_LIST_BACKGROUND, "bg:default");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_BACKGROUND, "bg:default");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_LIST_SELECTION, "fg:cyan,bold");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_SELECTION, "fg:cyan,bold");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_LIST_GROUP, "fg:white,bold");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_GROUP, "fg:white,bold");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_LIST_DESCRIPTION, "fg:bright-black");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_DESCRIPTION, "fg:bright-black");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_LIST_STARTING, "fg:cyan");
+            lineReader.setVariable(LineReader.COMPLETION_STYLE_STARTING, "fg:cyan");
+
+            // Auto-trigger completion when "/" is typed as the first character
+            lineReader.setAutosuggestion(LineReader.SuggestionType.COMPLETER);
 
             while (true) {
                 String input;
