@@ -19,11 +19,49 @@ public class Spinner {
             "Processing",
             "Contemplating",
             "Reflecting",
-            "Crafting response",
-            "Working on it",
-            "Figuring it out",
-            "Crunching ideas",
-            "Brewing thoughts",
+            "Evaluating",
+            "Computing",
+            "Synthesizing",
+            "Considering",
+            "Investigating",
+            "Examining",
+            "Exploring",
+            "Decoding",
+            "Interpreting",
+            "Assembling",
+            "Composing",
+            "Formulating",
+            "Deliberating",
+            "Weighing",
+            "Digesting",
+            "Untangling",
+            "Mapping",
+            "Structuring",
+            "Parsing",
+            "Resolving",
+            "Iterating",
+            "Refining",
+            "Deducing",
+            "Inferring",
+            "Connecting",
+            "Unraveling",
+            "Distilling",
+            "Calculating",
+            "Organizing",
+            "Strategizing",
+            "Brainstorming",
+            "Deciphering",
+            "Visualizing",
+            "Imagining",
+            "Sculpting",
+            "Architecting",
+            "Calibrating",
+            "Orchestrating",
+            "Navigating",
+            "Compiling",
+            "Abstracting",
+            "Harmonizing",
+            "Crystallizing",
     };
 
     private final PrintWriter out;
@@ -35,12 +73,19 @@ public class Spinner {
     }
 
     /**
-     * Start the spinner animation in a background thread.
+     * Start the spinner animation in a background thread with a random wording.
      */
     public void start() {
+        start(WORDINGS[ThreadLocalRandom.current().nextInt(WORDINGS.length)]);
+    }
+
+    /**
+     * Start the spinner animation in a background thread with a specific label.
+     */
+    public void start(String label) {
         if (running.getAndSet(true)) return;
 
-        String wording = WORDINGS[ThreadLocalRandom.current().nextInt(WORDINGS.length)];
+        String wording = label;
         thread = new Thread(() -> {
             int frame = 0;
             boolean blink = true;

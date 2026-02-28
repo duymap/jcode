@@ -8,11 +8,13 @@ import com.jcode.extensions.PlanningExtension;
 import com.jcode.model.Model;
 import com.jcode.model.ReasoningModelConfig;
 import com.jcode.tools.*;
+import com.jcode.tui.Spinner;
 import okhttp3.*;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -150,18 +152,25 @@ public class AgentSession {
                 onText.onText("\n\u001b[33m[%s]\u001b[0m ".formatted(toolName));
 
                 String result;
+                Spinner toolSpinner = new Spinner(new PrintWriter(System.out, true));
                 try {
                     JsonNode toolArgs = MAPPER.readTree(argsStr);
                     Tool tool = findTool(toolName);
                     if (tool == null) {
                         result = "Error: Unknown tool: " + toolName;
                     } else {
-                        // Show key args
+                        // Show key args, then newline so spinner doesn't overwrite
                         showToolArgs(toolName, toolArgs, onText);
+                        onText.onText("\n");
+                        // Start spinner during tool execution
+                        String spinnerLabel = buildToolSpinnerLabel(toolName, toolArgs);
+                        toolSpinner.start(spinnerLabel);
                         result = tool.execute(toolArgs, cwd);
                     }
                 } catch (Exception e) {
                     result = "Error: " + e.getMessage();
+                } finally {
+                    toolSpinner.stop();
                 }
 
                 // Split off diff display if present
@@ -211,6 +220,22 @@ public class AgentSession {
                 if (args.has("pattern")) onText.onText(args.get("pattern").asText() + " ");
             }
         }
+    }
+
+    private String buildToolSpinnerLabel(String toolName, JsonNode args) {
+        return switch (toolName) {
+            case "read" -> "Reading " + args.path("path").asText("file");
+            case "write" -> "Writing " + args.path("path").asText("file");
+            case "edit" -> "Editing " + args.path("path").asText("file");
+            case "bash" -> {
+                String cmd = args.path("command").asText("command");
+                if (cmd.length() > 40) cmd = cmd.substring(0, 37) + "...";
+                yield "Running " + cmd;
+            }
+            case "grep" -> "Searching '" + args.path("pattern").asText("") + "'";
+            case "find" -> "Finding " + args.path("pattern").asText("files");
+            default -> "Executing " + toolName;
+        };
     }
 
     /**
