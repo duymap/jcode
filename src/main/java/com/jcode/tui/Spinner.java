@@ -66,6 +66,7 @@ public class Spinner {
 
     private final PrintWriter out;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private boolean inline;
     private Thread thread;
 
     public Spinner(PrintWriter out) {
@@ -74,30 +75,40 @@ public class Spinner {
 
     /**
      * Start the spinner animation in a background thread with a random wording.
+     * Uses its own line (carriage-return based).
      */
     public void start() {
-        start(WORDINGS[ThreadLocalRandom.current().nextInt(WORDINGS.length)]);
+        this.inline = false;
+        startInternal(WORDINGS[ThreadLocalRandom.current().nextInt(WORDINGS.length)]);
     }
 
     /**
-     * Start the spinner animation in a background thread with a specific label.
+     * Start the spinner inline on the current line (appends after existing text).
+     * Uses ANSI save/restore cursor so the tool header line is preserved.
      */
-    public void start(String label) {
+    public void startInline(String label) {
+        this.inline = true;
+        startInternal(label);
+    }
+
+    private void startInternal(String label) {
         if (running.getAndSet(true)) return;
 
-        String wording = label;
         thread = new Thread(() -> {
             int frame = 0;
             boolean blink = true;
             try {
                 while (running.get()) {
                     String spinner = FRAMES[frame % FRAMES.length];
-                    // Blink effect: alternate between dim and normal
                     String style = blink ? "\u001b[1;35m" : "\u001b[2;35m";
-                    String line = "  " + style + spinner + " " + wording + "...\u001b[0m";
+                    String text = style + spinner + " " + label + "...\u001b[0m";
 
-                    // Write spinner line then move cursor back to start of line
-                    out.print("\r" + line + "\u001b[K");
+                    if (inline) {
+                        // Save cursor, print spinner, then restore cursor
+                        out.print("\u001b[s" + text + "\u001b[u");
+                    } else {
+                        out.print("\r  " + text + "\u001b[K");
+                    }
                     out.flush();
 
                     frame++;
@@ -107,8 +118,12 @@ public class Spinner {
             } catch (InterruptedException ignored) {
                 // Expected on stop
             } finally {
-                // Clear the spinner line
-                out.print("\r\u001b[K");
+                if (inline) {
+                    // Restore cursor and clear to end of line
+                    out.print("\u001b[s\u001b[K\u001b[u");
+                } else {
+                    out.print("\r\u001b[K");
+                }
                 out.flush();
             }
         }, "jcode-spinner");

@@ -159,12 +159,11 @@ public class AgentSession {
                     if (tool == null) {
                         result = "Error: Unknown tool: " + toolName;
                     } else {
-                        // Show key args, then newline so spinner doesn't overwrite
+                        // Show key args
                         showToolArgs(toolName, toolArgs, onText);
-                        onText.onText("\n");
-                        // Start spinner during tool execution
+                        // Start inline spinner (appends after args, cleans up on stop)
                         String spinnerLabel = buildToolSpinnerLabel(toolName, toolArgs);
-                        toolSpinner.start(spinnerLabel);
+                        toolSpinner.startInline(spinnerLabel);
                         result = tool.execute(toolArgs, cwd);
                     }
                 } catch (Exception e) {
@@ -188,6 +187,8 @@ public class AgentSession {
 
                 if (diffDisplay != null) {
                     onText.onText(diffDisplay.stripTrailing() + "\n");
+                } else if ("bash".equals(toolName)) {
+                    onText.onText(formatBashPreview(result) + "\n");
                 } else {
                     onText.onText("\u001b[2m(%d chars)\u001b[0m\n".formatted(result.length()));
                 }
@@ -220,6 +221,42 @@ public class AgentSession {
                 if (args.has("pattern")) onText.onText(args.get("pattern").asText() + " ");
             }
         }
+    }
+
+    private static final String DIM = "\u001b[2m";
+    private static final String RESET = "\u001b[0m";
+    private static final int PREVIEW_MAX_LINES = 4;
+    private static final int PREVIEW_MAX_LINE_LEN = 120;
+
+    private String formatBashPreview(String result) {
+        if (result.isEmpty()) {
+            return DIM + "(empty)" + RESET;
+        }
+
+        String[] lines = result.split("\n", -1);
+        int totalLines = lines.length;
+
+        // Strip trailing empty lines for display
+        int end = totalLines;
+        while (end > 0 && lines[end - 1].isBlank()) end--;
+
+        if (end == 0) {
+            return DIM + "(empty)" + RESET;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        int showCount = Math.min(end, PREVIEW_MAX_LINES);
+        for (int i = 0; i < showCount; i++) {
+            String line = lines[i];
+            if (line.length() > PREVIEW_MAX_LINE_LEN) {
+                line = line.substring(0, PREVIEW_MAX_LINE_LEN) + "…";
+            }
+            sb.append(DIM).append("  ").append(line).append(RESET).append("\n");
+        }
+        if (end > PREVIEW_MAX_LINES) {
+            sb.append(DIM).append("  … (").append(end).append(" lines total)").append(RESET);
+        }
+        return sb.toString().stripTrailing();
     }
 
     private String buildToolSpinnerLabel(String toolName, JsonNode args) {
