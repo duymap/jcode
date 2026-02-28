@@ -22,6 +22,10 @@ jcode connects to local model providers like **LM Studio** and **Ollama** to giv
 - **Local-first** — works with LM Studio and Ollama, no cloud API keys required
 - **Homebrew installable** — distribute via a custom tap
 
+## Demo
+
+![jcode demo](https://raw.githubusercontent.com/duymap/jcode/main/jcode.mp4)
+
 ## Architecture
 
 ```
