@@ -144,7 +144,9 @@ public class PlanningExtension {
      * Augment user input with plan context.
      */
     public static String augmentWithPlan(String originalText, String planText) {
-        return PLAN_MARKER + "\n\nPLAN:\n" + planText + "\n\nTASK:\n" + originalText;
+        return PLAN_MARKER + "\n\nPLAN:\n" + planText
+                + "\n\nTASK:\n" + originalText
+                + "\n\nIMPORTANT: Follow the plan above step by step. Use the available tools (read, bash, grep, find, write, edit) to execute each step. Start immediately with the first step.";
     }
 
     private String callReasoningModel(String taskText) throws IOException {

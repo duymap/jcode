@@ -72,8 +72,7 @@ public class JCodeCli implements Callable<Integer> {
 
             // Resolve reasoning model
             ReasoningModelConfig reasoningModel = null;
-            if (reasoningModelConfig != null && defaultModelConfig != null
-                    && !reasoningModelConfig.id().equals(defaultModelConfig.id())) {
+            if (reasoningModelConfig != null) {
                 String reasoningUrl = reasoningModelConfig.providerUrl();
                 if (reasoningUrl == null) {
                     reasoningUrl = DEFAULT_PROVIDER_URLS.getOrDefault(

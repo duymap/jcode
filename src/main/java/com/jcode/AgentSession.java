@@ -8,13 +8,11 @@ import com.jcode.extensions.PlanningExtension;
 import com.jcode.model.Model;
 import com.jcode.model.ReasoningModelConfig;
 import com.jcode.tools.*;
-import com.jcode.tui.Spinner;
 import okhttp3.*;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.PrintWriter;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -39,11 +37,17 @@ public class AgentSession {
             Always use tools to interact with the filesystem. Read files before editing them. \
             Be concise in your responses. Focus on solving the user's problem efficiently.
 
+            IMPORTANT: Never repeat or echo file contents in your response text. The user can already see \
+            tool results. Instead, briefly summarize what you found or reference specific line numbers.
+
             When working on code:
             - Read relevant files first to understand the codebase
             - Make targeted, minimal changes
-            - Explain what you're doing briefly
-            - Use bash for running tests, git commands, builds, etc.""";
+            - Explain what you're doing briefly, referencing file paths and line numbers
+            - Use bash for running tests, git commands, builds, etc.
+
+            If the user message contains a PLAN section (marked with [[jcode_plan]]), follow the plan step by step \
+            using the available tools. Execute each step immediately — do not just describe what you would do.""";
 
     private final Model model;
     private final String cwd;
@@ -152,24 +156,17 @@ public class AgentSession {
                 onText.onText("\n\u001b[33m[%s]\u001b[0m ".formatted(toolName));
 
                 String result;
-                Spinner toolSpinner = new Spinner(new PrintWriter(System.out, true));
                 try {
                     JsonNode toolArgs = MAPPER.readTree(argsStr);
                     Tool tool = findTool(toolName);
                     if (tool == null) {
                         result = "Error: Unknown tool: " + toolName;
                     } else {
-                        // Show key args
                         showToolArgs(toolName, toolArgs, onText);
-                        // Start inline spinner (appends after args, cleans up on stop)
-                        String spinnerLabel = buildToolSpinnerLabel(toolName, toolArgs);
-                        toolSpinner.startInline(spinnerLabel);
                         result = tool.execute(toolArgs, cwd);
                     }
                 } catch (Exception e) {
                     result = "Error: " + e.getMessage();
-                } finally {
-                    toolSpinner.stop();
                 }
 
                 // Split off diff display if present
@@ -189,6 +186,10 @@ public class AgentSession {
                     onText.onText(diffDisplay.stripTrailing() + "\n");
                 } else if ("bash".equals(toolName)) {
                     onText.onText(formatBashPreview(result) + "\n");
+                } else if ("read".equals(toolName)) {
+                    onText.onText("\n");
+                } else if ("grep".equals(toolName) || "find".equals(toolName)) {
+                    onText.onText(formatPreview(result, READ_PREVIEW_LINES) + "\n");
                 } else {
                     onText.onText("\u001b[2m(%d chars)\u001b[0m\n".formatted(result.length()));
                 }
@@ -225,19 +226,19 @@ public class AgentSession {
 
     private static final String DIM = "\u001b[2m";
     private static final String RESET = "\u001b[0m";
-    private static final int PREVIEW_MAX_LINES = 4;
+    private static final int BASH_PREVIEW_LINES = 4;
+    private static final int READ_PREVIEW_LINES = 10;
     private static final int PREVIEW_MAX_LINE_LEN = 120;
 
-    private String formatBashPreview(String result) {
+    private String formatPreview(String result, int maxLines) {
         if (result.isEmpty()) {
             return DIM + "(empty)" + RESET;
         }
 
         String[] lines = result.split("\n", -1);
-        int totalLines = lines.length;
 
         // Strip trailing empty lines for display
-        int end = totalLines;
+        int end = lines.length;
         while (end > 0 && lines[end - 1].isBlank()) end--;
 
         if (end == 0) {
@@ -245,7 +246,7 @@ public class AgentSession {
         }
 
         StringBuilder sb = new StringBuilder();
-        int showCount = Math.min(end, PREVIEW_MAX_LINES);
+        int showCount = Math.min(end, maxLines);
         for (int i = 0; i < showCount; i++) {
             String line = lines[i];
             if (line.length() > PREVIEW_MAX_LINE_LEN) {
@@ -253,27 +254,16 @@ public class AgentSession {
             }
             sb.append(DIM).append("  ").append(line).append(RESET).append("\n");
         }
-        if (end > PREVIEW_MAX_LINES) {
+        if (end > maxLines) {
             sb.append(DIM).append("  … (").append(end).append(" lines total)").append(RESET);
         }
         return sb.toString().stripTrailing();
     }
 
-    private String buildToolSpinnerLabel(String toolName, JsonNode args) {
-        return switch (toolName) {
-            case "read" -> "Reading " + args.path("path").asText("file");
-            case "write" -> "Writing " + args.path("path").asText("file");
-            case "edit" -> "Editing " + args.path("path").asText("file");
-            case "bash" -> {
-                String cmd = args.path("command").asText("command");
-                if (cmd.length() > 40) cmd = cmd.substring(0, 37) + "...";
-                yield "Running " + cmd;
-            }
-            case "grep" -> "Searching '" + args.path("pattern").asText("") + "'";
-            case "find" -> "Finding " + args.path("pattern").asText("files");
-            default -> "Executing " + toolName;
-        };
+    private String formatBashPreview(String result) {
+        return formatPreview(result, BASH_PREVIEW_LINES);
     }
+
 
     /**
      * Call the LLM API with the current message history.
