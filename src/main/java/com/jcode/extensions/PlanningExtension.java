@@ -30,7 +30,7 @@ public class PlanningExtension {
 
             Be concise and focus on WHAT to do, not WHY. No explanations, no thinking process, no extra text.""";
 
-    static final String PLAN_MARKER = "[[JCODE_PLAN]]";
+    static final String PLAN_MARKER = "[[jcode_plan]]";
 
     private static final Set<String> GREETINGS = Set.of(
             "hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye"

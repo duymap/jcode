@@ -20,7 +20,6 @@
         <jline.version>3.26.3</jline.version>
         <okhttp.version>4.12.0</okhttp.version>
         <jackson.version>2.17.2</jackson.version>
-        <jansi.version>2.4.1</jansi.version>
     </properties>
 
     <dependencies>
@@ -52,12 +51,6 @@
             <version>${jackson.version}</version>
         </dependency>
 
-        <!-- ANSI colors -->
-        <dependency>
-            <groupId>org.fusesource.jansi</groupId>
-            <artifactId>jansi</artifactId>
-            <version>${jansi.version}</version>
-        </dependency>
     </dependencies>
 
     <build>

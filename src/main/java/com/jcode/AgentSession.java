@@ -164,12 +164,24 @@ public class AgentSession {
                     result = "Error: " + e.getMessage();
                 }
 
+                // Split off diff display if present
+                String diffDisplay = null;
+                if (result.contains("@@DIFF@@")) {
+                    int sep = result.indexOf("@@DIFF@@");
+                    diffDisplay = result.substring(sep + "@@DIFF@@".length());
+                    result = result.substring(0, sep);
+                }
+
                 // Truncate very long results
                 if (result.length() > 50_000) {
                     result = result.substring(0, 50_000) + "\n[Output truncated at 50KB]";
                 }
 
-                onText.onText("\u001b[2m(%d chars)\u001b[0m\n".formatted(result.length()));
+                if (diffDisplay != null) {
+                    onText.onText(diffDisplay.stripTrailing() + "\n");
+                } else {
+                    onText.onText("\u001b[2m(%d chars)\u001b[0m\n".formatted(result.length()));
+                }
 
                 messages.add(Map.of(
                         "role", "tool",
@@ -264,6 +276,9 @@ public class AgentSession {
     private JsonNode processStream(Response response, TextCallback onText) throws IOException {
         StringBuilder fullContent = new StringBuilder();
         Map<Integer, ToolCallAccumulator> toolCallMap = new LinkedHashMap<>();
+        // Buffer for filtering <think>...</think> tags from streamed content
+        StringBuilder thinkBuffer = new StringBuilder();
+        boolean insideThink = false;
 
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(Objects.requireNonNull(response.body()).byteStream()))) {
@@ -277,11 +292,35 @@ public class AgentSession {
                     JsonNode chunk = MAPPER.readTree(data);
                     JsonNode delta = chunk.path("choices").path(0).path("delta");
 
-                    // Content
+                    // Content — filter out <think>...</think> blocks
                     if (delta.has("content") && !delta.get("content").isNull()) {
                         String text = delta.get("content").asText();
                         fullContent.append(text);
-                        onText.onText(text);
+
+                        // Process text to strip <think> tags for display
+                        for (int i = 0; i < text.length(); i++) {
+                            char c = text.charAt(i);
+                            if (insideThink) {
+                                thinkBuffer.append(c);
+                                if (thinkBuffer.toString().endsWith("</think>")) {
+                                    insideThink = false;
+                                    thinkBuffer.setLength(0);
+                                }
+                            } else {
+                                thinkBuffer.append(c);
+                                String buf = thinkBuffer.toString();
+                                if (buf.equals("<think>")) {
+                                    insideThink = true;
+                                    thinkBuffer.setLength(0);
+                                } else if ("<think>".startsWith(buf)) {
+                                    // Partial match — keep buffering
+                                } else {
+                                    // No match — flush buffer to output
+                                    onText.onText(buf);
+                                    thinkBuffer.setLength(0);
+                                }
+                            }
+                        }
                     }
 
                     // Tool calls
@@ -307,6 +346,11 @@ public class AgentSession {
                     // Skip malformed chunks
                 }
             }
+        }
+
+        // Flush any remaining buffered text that wasn't part of a <think> tag
+        if (!insideThink && thinkBuffer.length() > 0) {
+            onText.onText(thinkBuffer.toString());
         }
 
         // Build final response object

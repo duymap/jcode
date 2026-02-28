@@ -45,7 +45,13 @@ public class AppRunner {
      * One-shot mode: send prompt, print response, exit.
      */
     private static void runPrintMode(AgentSession session, String prompt) throws IOException {
-        String response = session.chat(prompt, System.out::print);
+        Spinner spinner = new Spinner(new PrintWriter(System.out, true));
+        spinner.start();
+        String response = session.chat(prompt, text -> {
+            spinner.stop();
+            System.out.print(text);
+        });
+        spinner.stop();
         System.out.println();
     }
 
@@ -122,10 +128,14 @@ public class AppRunner {
                 out.flush();
 
                 try {
+                    Spinner spinner = new Spinner(out);
+                    spinner.start();
                     session.chat(trimmed, text -> {
+                        spinner.stop();
                         out.print(text);
                         out.flush();
                     });
+                    spinner.stop();
                     out.println();
                     out.println();
                     out.flush();

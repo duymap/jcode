@@ -1,6 +1,7 @@
 package com.jcode.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.jcode.tui.DiffRenderer;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,10 +40,21 @@ public class WriteFileTool implements Tool {
         String content = args.get("content").asText();
         Path resolved = ReadFileTool.resolvePath(filePath, cwd);
 
+        boolean existed = Files.exists(resolved);
+        String oldContent = existed ? Files.readString(resolved) : null;
+
         Files.createDirectories(resolved.getParent());
         Files.writeString(resolved, content);
 
         long bytes = content.getBytes().length;
-        return "Wrote %d bytes to %s".formatted(bytes, resolved);
+        String llmResult = "Wrote %d bytes to %s".formatted(bytes, resolved);
+
+        String diff;
+        if (existed && oldContent != null) {
+            diff = DiffRenderer.render(filePath, oldContent, content, 1);
+        } else {
+            diff = DiffRenderer.renderNewFile(filePath, content);
+        }
+        return llmResult + "@@DIFF@@" + diff;
     }
 }

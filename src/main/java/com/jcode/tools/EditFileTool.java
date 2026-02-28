@@ -1,6 +1,7 @@
 package com.jcode.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.jcode.tui.DiffRenderer;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -46,9 +47,11 @@ public class EditFileTool implements Tool {
         }
 
         String content = Files.readString(resolved);
+        String originalContent = content;
 
         // Try exact match first
         int idx = content.indexOf(oldText);
+        String actualOldText = oldText;
         if (idx == -1) {
             // Try fuzzy match: normalize whitespace at end of lines
             String normalizedContent = normalizeTrailingWhitespace(content);
@@ -66,7 +69,8 @@ public class EditFileTool implements Tool {
             String after = normalizedContent.substring(idx + normalizedOld.length());
             int originalEnd = content.length() - mapNormalizedSuffix(content, after);
 
-            String originalOld = content.substring(originalStart, originalEnd);
+            actualOldText = content.substring(originalStart, originalEnd);
+            idx = originalStart;
             content = content.substring(0, originalStart) + newText + content.substring(originalEnd);
         } else {
             // Check for duplicate matches
@@ -80,9 +84,13 @@ public class EditFileTool implements Tool {
 
         Files.writeString(resolved, content);
 
-        int lineNum = content.substring(0, Math.min(idx, content.length()))
+        int lineNum = originalContent.substring(0, Math.min(idx, originalContent.length()))
                 .split("\n", -1).length;
-        return "Edited %s (change at line %d)".formatted(resolved, lineNum);
+
+        String displayPath = filePath;
+        String diff = DiffRenderer.render(displayPath, actualOldText, newText, lineNum);
+        String llmResult = "Edited %s (change at line %d)".formatted(resolved, lineNum);
+        return llmResult + "@@DIFF@@" + diff;
     }
 
     private static String normalizeTrailingWhitespace(String text) {

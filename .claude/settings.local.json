@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(git commit:*)",
+      "Bash(git remote:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git:*)",
+      "Bash(mvn compile:*)",
+      "WebSearch",
+      "WebFetch(domain:kotrotsos.medium.com)",
+      "WebFetch(domain:www.codeagentswarm.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:www.builder.io)",
+      "WebFetch(domain:ivanleo.com)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
