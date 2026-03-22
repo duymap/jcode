@@ -32,7 +32,9 @@ public class AgentSession {
             including writing code, debugging, refactoring, and explaining code.
 
             You have access to tools for reading, writing, and editing files, running bash commands, \
-            searching files with grep, and finding files by pattern.
+            searching files with grep, and finding files by pattern. \
+            You can also search the web and fetch web pages to look up documentation, API references, \
+            or any information you need. Use web_search when you don't know something, then web_fetch to read the relevant pages.
 
             Always use tools to interact with the filesystem. Read files before editing them. \
             Be concise in your responses. Focus on solving the user's problem efficiently.
@@ -68,6 +70,8 @@ public class AgentSession {
         this.tools.add(new ReadFileTool());
         this.tools.add(new GrepTool());
         this.tools.add(new FindFilesTool());
+        this.tools.add(new WebSearchTool());
+        this.tools.add(new WebFetchTool());
         if (!readonly) {
             this.tools.add(new WriteFileTool());
             this.tools.add(new EditFileTool());
@@ -188,6 +192,8 @@ public class AgentSession {
                     onText.onText(formatBashPreview(result) + "\n");
                 } else if ("read".equals(toolName)) {
                     onText.onText("\n");
+                } else if ("web_search".equals(toolName) || "web_fetch".equals(toolName)) {
+                    onText.onText(formatPreview(result, READ_PREVIEW_LINES) + "\n");
                 } else if ("grep".equals(toolName) || "find".equals(toolName)) {
                     onText.onText(formatPreview(result, READ_PREVIEW_LINES) + "\n");
                 } else {
@@ -220,6 +226,12 @@ public class AgentSession {
             }
             case "find" -> {
                 if (args.has("pattern")) onText.onText(args.get("pattern").asText() + " ");
+            }
+            case "web_search" -> {
+                if (args.has("query")) onText.onText("'" + args.get("query").asText() + "' ");
+            }
+            case "web_fetch" -> {
+                if (args.has("url")) onText.onText(args.get("url").asText() + " ");
             }
         }
     }
@@ -266,10 +278,92 @@ public class AgentSession {
 
 
     /**
+     * Estimate token count for a message (~4 chars per token).
+     */
+    private int estimateTokens(Map<String, Object> msg) {
+        int chars = 0;
+        Object content = msg.get("content");
+        if (content != null) {
+            chars += content.toString().length();
+        }
+        Object toolCalls = msg.get("tool_calls");
+        if (toolCalls instanceof List<?> list) {
+            chars += MAPPER.valueToTree(list).toString().length();
+        }
+        return Math.max(1, chars / 4);
+    }
+
+    private int estimateSystemTokens() {
+        return SYSTEM_PROMPT.length() / 4;
+    }
+
+    /**
+     * Trim conversation history to fit within the model's context window.
+     * Keeps system prompt + most recent messages. Drops oldest turns first,
+     * ensuring tool call/result pairs are removed together to keep history valid.
+     */
+    private void trimMessages() {
+        int reserveForResponse = model.maxTokens();
+        int systemTokens = estimateSystemTokens();
+        // Leave 10% buffer beyond system + response tokens
+        int availableTokens = (int) (model.contextWindow() * 0.9) - systemTokens - reserveForResponse;
+
+        if (availableTokens <= 0) return;
+
+        // Calculate total tokens
+        int totalTokens = 0;
+        for (Map<String, Object> msg : messages) {
+            totalTokens += estimateTokens(msg);
+        }
+
+        if (totalTokens <= availableTokens) return;
+
+        // Need to trim. Remove oldest messages until we fit.
+        // We insert a summary message to preserve some context.
+        int tokensToRemove = totalTokens - availableTokens;
+        int removedTokens = 0;
+        int removeUpTo = 0;
+
+        for (int i = 0; i < messages.size() && removedTokens < tokensToRemove; i++) {
+            removedTokens += estimateTokens(messages.get(i));
+            removeUpTo = i + 1;
+        }
+
+        // Make sure we don't break tool_call / tool_result pairs.
+        // If we stop in the middle of a tool sequence, extend to include all dangling tool results.
+        while (removeUpTo < messages.size()) {
+            Map<String, Object> next = messages.get(removeUpTo);
+            if ("tool".equals(next.get("role"))) {
+                removedTokens += estimateTokens(next);
+                removeUpTo++;
+            } else if ("assistant".equals(next.get("role")) && next.containsKey("tool_calls")) {
+                // Assistant with tool_calls — must also remove all following tool results
+                removedTokens += estimateTokens(next);
+                removeUpTo++;
+            } else {
+                break;
+            }
+        }
+
+        if (removeUpTo > 0 && removeUpTo < messages.size()) {
+            messages.subList(0, removeUpTo).clear();
+            // Insert a context note so the model knows history was trimmed
+            messages.add(0, Map.of(
+                    "role", "user",
+                    "content", "[Earlier conversation history was trimmed to fit context window. " +
+                            "Continue based on the remaining messages below.]"
+            ));
+        }
+    }
+
+    /**
      * Call the LLM API with the current message history.
      * Streams text content to onText callback, returns the full response JSON.
      */
     private JsonNode callLlm(TextCallback onText) throws IOException {
+        // Trim history if approaching context window limit
+        trimMessages();
+
         // Build request
         ObjectNode requestBody = MAPPER.createObjectNode();
         requestBody.put("model", model.id());
