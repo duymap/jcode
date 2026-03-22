@@ -15,10 +15,11 @@ jcode connects to local model providers like **LM Studio** and **Ollama** to giv
 ## Features
 
 - **Interactive REPL** — chat with an AI coding agent in your terminal
-- **Tool use** — the agent can read, write, edit files, run bash commands, grep, and find files
+- **Tool use** — the agent can read, write, edit files, run bash commands, grep, find files, search the web, and fetch web pages
 - **Automatic planning** — generates an execution plan before complex tasks using a separate reasoning model
 - **Readonly mode** — restrict the agent to read-only operations
 - **One-shot mode** — pipe a prompt in and get a response back, no REPL
+- **Web-augmented** — search the web and fetch documentation when the LLM needs extra knowledge
 - **Local-first** — works with LM Studio and Ollama, no cloud API keys required
 - **Homebrew installable** — distribute via a custom tap
 
@@ -49,7 +50,9 @@ com.jcode
 │   ├── EditFileTool        Find-and-replace within a file
 │   ├── BashTool            Execute shell commands
 │   ├── GrepTool            Regex search across files
-│   └── FindFilesTool       Glob-based file discovery
+│   ├── FindFilesTool       Glob-based file discovery
+│   ├── WebSearchTool       Search the web via DuckDuckGo
+│   └── WebFetchTool        Fetch and extract text from web pages
 │
 ├── tui/
 │   ├── AppRunner          Terminal UI: banner, line reader, streaming output
@@ -168,6 +171,8 @@ The agent has access to the following tools during a session:
 | `bash` | Execute a shell command (120s default timeout) | No |
 | `grep` | Regex search across files | Yes |
 | `find` | Find files by glob pattern | Yes |
+| `web_search` | Search the web via DuckDuckGo (no API key needed) | Yes |
+| `web_fetch` | Fetch a web page and extract readable text | Yes |
 
 ## Install via Homebrew
 
