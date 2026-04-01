@@ -44,6 +44,10 @@ public class JCodeCli implements Callable<Integer> {
     @Option(names = {"--no-planning"}, description = "Disable automatic planning step")
     private boolean noPlanning;
 
+    @Option(names = {"--permission"}, description = "Permission mode: auto, default, bypass (default: auto)",
+            defaultValue = "auto")
+    private String permissionMode;
+
     @Override
     public Integer call() {
         try {
@@ -84,12 +88,19 @@ public class JCodeCli implements Callable<Integer> {
 
             boolean disablePlanning = noPlanning || printPrompt != null;
 
+            PermissionManager.Mode permMode = switch (permissionMode.toLowerCase()) {
+                case "default" -> PermissionManager.Mode.DEFAULT;
+                case "bypass" -> PermissionManager.Mode.BYPASS;
+                default -> PermissionManager.Mode.AUTO;
+            };
+
             AgentSession session = new AgentSession(
                     model,
                     System.getProperty("user.dir"),
                     readonly,
                     disablePlanning,
-                    reasoningModel
+                    reasoningModel,
+                    permMode
             );
 
             String modelFallbackMessage = null;

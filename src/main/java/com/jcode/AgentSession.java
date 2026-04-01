@@ -58,20 +58,26 @@ public class AgentSession {
     private final PlanningExtension planningExtension;
     private final boolean readonly;
     private final String systemPrompt;
+    private final MemoryManager memoryManager;
+    private final PermissionManager permissionManager;
     private int totalInputTokens;
     private int totalOutputTokens;
 
     public AgentSession(Model model, String cwd, boolean readonly,
-                        boolean disablePlanning, ReasoningModelConfig reasoningModel) {
+                        boolean disablePlanning, ReasoningModelConfig reasoningModel,
+                        PermissionManager.Mode permissionMode) {
         this.model = model;
         this.cwd = cwd;
         this.readonly = readonly;
         this.messages = new ArrayList<>();
         this.totalInputTokens = 0;
         this.totalOutputTokens = 0;
+        this.memoryManager = new MemoryManager(cwd);
+        this.permissionManager = new PermissionManager(
+                readonly ? PermissionManager.Mode.BYPASS : permissionMode);
 
-        // Build system prompt with dynamic context
-        this.systemPrompt = buildSystemPrompt(cwd);
+        // Build system prompt with dynamic context + memories
+        this.systemPrompt = buildSystemPrompt(cwd, memoryManager);
 
         // Register tools
         this.tools = new ArrayList<>();
@@ -80,6 +86,7 @@ public class AgentSession {
         this.tools.add(new FindFilesTool());
         this.tools.add(new WebSearchTool());
         this.tools.add(new WebFetchTool());
+        this.tools.add(new MemoryTool(memoryManager));
         if (!readonly) {
             this.tools.add(new WriteFileTool());
             this.tools.add(new EditFileTool());
@@ -94,7 +101,7 @@ public class AgentSession {
         }
     }
 
-    private static String buildSystemPrompt(String cwd) {
+    private static String buildSystemPrompt(String cwd, MemoryManager memoryManager) {
         StringBuilder prompt = new StringBuilder(SYSTEM_PROMPT);
 
         ContextBuilder ctx = new ContextBuilder(cwd);
@@ -103,7 +110,30 @@ public class AgentSession {
             prompt.append(dynamicContext);
         }
 
+        // Inject persistent memories
+        String memories = memoryManager.loadMemoriesForPrompt();
+        if (memories != null) {
+            prompt.append("\n\n## Persistent Memories\n\n");
+            prompt.append("The following memories were saved from previous sessions. ");
+            prompt.append("Use them to inform your responses. ");
+            prompt.append("Use the 'memory' tool to save new memories when the user shares ");
+            prompt.append("preferences, corrections, or important project context.\n\n");
+            prompt.append(memories);
+        }
+
         return prompt.toString();
+    }
+
+    public MemoryManager getMemoryManager() {
+        return memoryManager;
+    }
+
+    public PermissionManager getPermissionManager() {
+        return permissionManager;
+    }
+
+    public PermissionManager.Mode getPermissionMode() {
+        return permissionManager.getMode();
     }
 
     public Model getModel() {
@@ -220,6 +250,10 @@ public class AgentSession {
             case "web_fetch" -> {
                 if (args.has("url")) onText.onText(args.get("url").asText() + " ");
             }
+            case "memory" -> {
+                if (args.has("action")) onText.onText(args.get("action").asText() + " ");
+                if (args.has("name")) onText.onText("'" + args.get("name").asText() + "' ");
+            }
         }
     }
 
@@ -313,7 +347,12 @@ public class AgentSession {
                 result = "Error: Unknown tool: " + ptc.name;
             } else {
                 showToolArgs(ptc.name, toolArgs, onText);
-                result = ptc.tool.execute(toolArgs, cwd);
+                // Check permission before execution
+                if (!permissionManager.checkPermission(ptc.tool, toolArgs, onText::onText)) {
+                    result = "Permission denied by user for tool: " + ptc.name;
+                } else {
+                    result = ptc.tool.execute(toolArgs, cwd);
+                }
             }
         } catch (Exception e) {
             result = "Error: " + e.getMessage();
@@ -419,29 +458,126 @@ public class AgentSession {
         return systemPrompt.length() / 4;
     }
 
+    private boolean autoCompacting = false;
+
     /**
-     * Trim conversation history to fit within the model's context window.
-     * Keeps system prompt + most recent messages. Drops oldest turns first,
-     * ensuring tool call/result pairs are removed together to keep history valid.
+     * Manage context window: auto-compact at 80% usage, hard-trim as last resort.
+     * Called before each LLM call.
      */
     private void trimMessages() {
         int reserveForResponse = model.maxTokens();
         int systemTokens = estimateSystemTokens();
-        // Leave 10% buffer beyond system + response tokens
-        int availableTokens = (int) (model.contextWindow() * 0.9) - systemTokens - reserveForResponse;
+        int totalCapacity = (int) (model.contextWindow() * 0.9) - systemTokens - reserveForResponse;
 
-        if (availableTokens <= 0) return;
+        if (totalCapacity <= 0) return;
 
-        // Calculate total tokens
         int totalTokens = 0;
         for (Map<String, Object> msg : messages) {
             totalTokens += estimateTokens(msg);
         }
 
-        if (totalTokens <= availableTokens) return;
+        if (totalTokens <= totalCapacity) return;
 
-        // Need to trim. Remove oldest messages until we fit.
-        // We insert a summary message to preserve some context.
+        // Try auto-compact first (LLM-powered summarization) — but prevent re-entrancy
+        if (!autoCompacting && messages.size() > 4) {
+            autoCompacting = true;
+            try {
+                autoCompact(totalTokens, totalCapacity);
+                // Recalculate after compaction
+                totalTokens = 0;
+                for (Map<String, Object> msg : messages) {
+                    totalTokens += estimateTokens(msg);
+                }
+                if (totalTokens <= totalCapacity) return;
+            } catch (Exception e) {
+                // Auto-compact failed, fall through to hard trim
+            } finally {
+                autoCompacting = false;
+            }
+        }
+
+        // Last resort: hard trim oldest messages
+        hardTrimMessages(totalTokens, totalCapacity);
+    }
+
+    /**
+     * Auto-compact: summarize the oldest half of messages via LLM, replace with summary.
+     */
+    private void autoCompact(int totalTokens, int targetCapacity) throws IOException {
+        // Find the midpoint — summarize the older half
+        int halfTokens = totalTokens / 2;
+        int accumulated = 0;
+        int splitAt = 0;
+        for (int i = 0; i < messages.size(); i++) {
+            accumulated += estimateTokens(messages.get(i));
+            splitAt = i + 1;
+            if (accumulated >= halfTokens) break;
+        }
+
+        // Extend splitAt to avoid breaking tool_call/tool_result pairs
+        while (splitAt < messages.size()) {
+            Map<String, Object> next = messages.get(splitAt);
+            if ("tool".equals(next.get("role"))) {
+                splitAt++;
+            } else if ("assistant".equals(next.get("role")) && next.containsKey("tool_calls")) {
+                splitAt++;
+            } else {
+                break;
+            }
+        }
+
+        if (splitAt <= 1 || splitAt >= messages.size()) return;
+
+        // Build a summary of the old messages
+        StringBuilder oldContext = new StringBuilder();
+        for (int i = 0; i < splitAt; i++) {
+            Map<String, Object> msg = messages.get(i);
+            String role = String.valueOf(msg.get("role"));
+            Object content = msg.get("content");
+            if (content != null && !content.toString().isEmpty()) {
+                String text = content.toString();
+                // Truncate individual messages in summary input to keep it reasonable
+                if (text.length() > 500) text = text.substring(0, 500) + "...";
+                oldContext.append(role).append(": ").append(text).append("\n");
+            }
+        }
+
+        // Ask LLM to summarize (using a minimal temporary conversation)
+        List<Map<String, Object>> savedMessages = new ArrayList<>(messages);
+        messages.clear();
+        messages.add(Map.of("role", "user", "content",
+                "Summarize this conversation history in ~200 words, preserving key decisions, " +
+                        "file paths, and important context. Be concise.\n\n" + oldContext));
+
+        try {
+            // Silent callback — don't display auto-compact output
+            JsonNode response = callLlm(text -> {});
+            String summary = response.path("choices").path(0).path("message").path("content").asText("");
+
+            // Rebuild messages: summary + recent messages
+            messages.clear();
+            if (!summary.isEmpty()) {
+                messages.add(Map.of("role", "user",
+                        "content", "[Auto-compacted conversation summary]\n" + summary));
+                messages.add(Map.of("role", "assistant",
+                        "content", "Understood. I have the context from our earlier conversation. Continuing."));
+            }
+            // Add back the recent (non-summarized) messages
+            for (int i = splitAt; i < savedMessages.size(); i++) {
+                messages.add(savedMessages.get(i));
+            }
+        } catch (IOException e) {
+            // Restore original messages on failure
+            messages.clear();
+            messages.addAll(savedMessages);
+            throw e;
+        }
+    }
+
+    /**
+     * Hard trim: remove oldest messages to fit context window (last resort).
+     */
+    private void hardTrimMessages(int totalTokens, int availableTokens) {
         int tokensToRemove = totalTokens - availableTokens;
         int removedTokens = 0;
         int removeUpTo = 0;
@@ -451,16 +587,12 @@ public class AgentSession {
             removeUpTo = i + 1;
         }
 
-        // Make sure we don't break tool_call / tool_result pairs.
-        // If we stop in the middle of a tool sequence, extend to include all dangling tool results.
+        // Don't break tool_call / tool_result pairs
         while (removeUpTo < messages.size()) {
             Map<String, Object> next = messages.get(removeUpTo);
             if ("tool".equals(next.get("role"))) {
-                removedTokens += estimateTokens(next);
                 removeUpTo++;
             } else if ("assistant".equals(next.get("role")) && next.containsKey("tool_calls")) {
-                // Assistant with tool_calls — must also remove all following tool results
-                removedTokens += estimateTokens(next);
                 removeUpTo++;
             } else {
                 break;
@@ -469,8 +601,7 @@ public class AgentSession {
 
         if (removeUpTo > 0 && removeUpTo < messages.size()) {
             messages.subList(0, removeUpTo).clear();
-            // Insert a context note so the model knows history was trimmed
-            messages.add(0, Map.of(
+            messages.addFirst(Map.of(
                     "role", "user",
                     "content", "[Earlier conversation history was trimmed to fit context window. " +
                             "Continue based on the remaining messages below.]"

@@ -57,9 +57,9 @@ Based on analysis of Claude Code source (for-learn-claude-cli) applied to jcode'
 - [x] **Concurrent tool execution** (#2) — Parallel read-only tools via Java virtual threads
 
 ### Phase 2 — Intelligence
-- [ ] **Context compaction** (#4) — `/compact` + auto-compact when near limit
-- [ ] **Persistent memory system** (#1) — `~/.jcode/memory/` with markdown files
-- [ ] **Permission system** (#5) — Granular tool permissions
+- [x] **Context compaction** (#4) — Auto-compact at context limit + `/compact` manual trigger
+- [x] **Persistent memory system** (#1) — `~/.jcode/memory/` + MemoryTool + `/memory` command
+- [x] **Permission system** (#5) — AUTO/DEFAULT/BYPASS modes + dangerous command detection
 
 ### Phase 3 — Advanced
 - [ ] **Sub-agent support** (#3) — Spawn secondary LLM calls

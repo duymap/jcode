@@ -1,7 +1,9 @@
 package com.jcode.tui;
 
 import com.jcode.AgentSession;
+import com.jcode.MemoryManager;
 import com.jcode.ModelResolver;
+import com.jcode.PermissionManager;
 import com.jcode.model.Model;
 import org.jline.reader.*;
 import org.jline.terminal.Terminal;
@@ -37,6 +39,7 @@ public class AppRunner {
             {"/commit",  "Generate a commit message and commit staged changes"},
             {"/diff",    "Show current git diff"},
             {"/model",   "Show or switch the active model"},
+            {"/memory",  "List stored memories (or /memory <query> to search)"},
             {"/cost",    "Show estimated token usage for this session"},
             {"/exit",    "Exit jcode"},
     };
@@ -87,6 +90,13 @@ public class AppRunner {
             out.println("  \u001b[2mModel: " + session.getModel().id() + "\u001b[0m");
             if (session.isReadonly()) {
                 out.println("  \u001b[33mMode: read-only (no write/bash tools)\u001b[0m");
+            } else {
+                String modeLabel = switch (session.getPermissionMode()) {
+                    case AUTO -> "auto (asks for dangerous commands)";
+                    case DEFAULT -> "default (asks for all writes)";
+                    case BYPASS -> "bypass (no confirmations)";
+                };
+                out.println("  \u001b[2mPermissions: " + modeLabel + "\u001b[0m");
             }
             if (modelFallbackMessage != null) {
                 out.println("  \u001b[33m" + modelFallbackMessage + "\u001b[0m");
@@ -134,6 +144,25 @@ public class AppRunner {
 
             // Auto-trigger completion when "/" is typed as the first character
             lineReader.setAutosuggestion(LineReader.SuggestionType.COMPLETER);
+
+            // Set up permission confirmation handler using the terminal
+            session.getPermissionManager().setConfirmationHandler((toolName, description) -> {
+                try {
+                    out.print("  Allow? [\u001b[32my\u001b[0m/\u001b[31mn\u001b[0m] ");
+                    out.flush();
+                    String input = lineReader.readLine("").trim().toLowerCase();
+                    if (input.equals("y") || input.equals("yes")) {
+                        return true;
+                    }
+                    out.println("  \u001b[31mDenied.\u001b[0m");
+                    out.flush();
+                    return false;
+                } catch (Exception e) {
+                    out.println("  \u001b[31mDenied (input error).\u001b[0m");
+                    out.flush();
+                    return false;
+                }
+            });
 
             while (true) {
                 String input;
@@ -226,6 +255,10 @@ public class AppRunner {
             }
             case "/model" -> {
                 handleModel(session, args, out);
+                return true;
+            }
+            case "/memory" -> {
+                handleMemory(session, args, out);
                 return true;
             }
             case "/cost" -> {
@@ -347,6 +380,22 @@ public class AppRunner {
             } catch (Exception e) {
                 out.println("  \u001b[31mFailed to switch model: " + e.getMessage() + "\u001b[0m");
             }
+        }
+        out.println();
+        out.flush();
+    }
+
+    private static void handleMemory(AgentSession session, String args, PrintWriter out) {
+        out.println();
+        MemoryManager mm = session.getMemoryManager();
+        if (args.isEmpty()) {
+            // List all memories
+            String result = mm.listMemories();
+            out.println("  " + result.replace("\n", "\n  "));
+        } else {
+            // Search memories
+            String result = mm.recallMemories(args);
+            out.println("  " + result.replace("\n", "\n  "));
         }
         out.println();
         out.flush();
