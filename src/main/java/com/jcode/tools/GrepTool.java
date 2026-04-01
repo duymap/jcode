@@ -22,6 +22,11 @@ public class GrepTool implements Tool {
     }
 
     @Override
+    public boolean isReadOnly() {
+        return true;
+    }
+
+    @Override
     public String description() {
         return "Search file contents using a regex pattern. "
                 + "Respects .gitignore. Returns matching lines with file paths and line numbers.";

@@ -29,4 +29,13 @@ public interface Tool {
      * @return tool result as a string
      */
     String execute(JsonNode args, String cwd) throws Exception;
+
+    /**
+     * Whether this tool is read-only (no side effects).
+     * Read-only tools can be executed concurrently.
+     * Default: false (conservative — treat as write tool).
+     */
+    default boolean isReadOnly() {
+        return false;
+    }
 }

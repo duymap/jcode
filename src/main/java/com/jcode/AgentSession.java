@@ -14,7 +14,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 /**
  * Core agent session: manages the LLM conversation loop with tool calling.
@@ -51,12 +51,15 @@ public class AgentSession {
             If the user message contains a PLAN section (marked with [[jcode_plan]]), follow the plan step by step \
             using the available tools. Execute each step immediately — do not just describe what you would do.""";
 
-    private final Model model;
+    private Model model;
     private final String cwd;
     private final List<Tool> tools;
     private final List<Map<String, Object>> messages;
     private final PlanningExtension planningExtension;
     private final boolean readonly;
+    private final String systemPrompt;
+    private int totalInputTokens;
+    private int totalOutputTokens;
 
     public AgentSession(Model model, String cwd, boolean readonly,
                         boolean disablePlanning, ReasoningModelConfig reasoningModel) {
@@ -64,6 +67,11 @@ public class AgentSession {
         this.cwd = cwd;
         this.readonly = readonly;
         this.messages = new ArrayList<>();
+        this.totalInputTokens = 0;
+        this.totalOutputTokens = 0;
+
+        // Build system prompt with dynamic context
+        this.systemPrompt = buildSystemPrompt(cwd);
 
         // Register tools
         this.tools = new ArrayList<>();
@@ -86,12 +94,44 @@ public class AgentSession {
         }
     }
 
+    private static String buildSystemPrompt(String cwd) {
+        StringBuilder prompt = new StringBuilder(SYSTEM_PROMPT);
+
+        ContextBuilder ctx = new ContextBuilder(cwd);
+        String dynamicContext = ctx.build();
+        if (dynamicContext != null) {
+            prompt.append(dynamicContext);
+        }
+
+        return prompt.toString();
+    }
+
     public Model getModel() {
         return model;
     }
 
     public boolean isReadonly() {
         return readonly;
+    }
+
+    public void setModel(Model model) {
+        this.model = model;
+    }
+
+    public String getCwd() {
+        return cwd;
+    }
+
+    public int getTotalInputTokens() {
+        return totalInputTokens;
+    }
+
+    public int getTotalOutputTokens() {
+        return totalOutputTokens;
+    }
+
+    public int getMessageCount() {
+        return messages.size();
     }
 
     /**
@@ -151,61 +191,8 @@ public class AgentSession {
                 return content;
             }
 
-            // Execute tool calls
-            for (JsonNode tc : toolCalls) {
-                String toolCallId = tc.get("id").asText();
-                String toolName = tc.path("function").path("name").asText();
-                String argsStr = tc.path("function").path("arguments").asText("{}");
-
-                onText.onText("\n\u001b[33m[%s]\u001b[0m ".formatted(toolName));
-
-                String result;
-                try {
-                    JsonNode toolArgs = MAPPER.readTree(argsStr);
-                    Tool tool = findTool(toolName);
-                    if (tool == null) {
-                        result = "Error: Unknown tool: " + toolName;
-                    } else {
-                        showToolArgs(toolName, toolArgs, onText);
-                        result = tool.execute(toolArgs, cwd);
-                    }
-                } catch (Exception e) {
-                    result = "Error: " + e.getMessage();
-                }
-
-                // Split off diff display if present
-                String diffDisplay = null;
-                if (result.contains("@@DIFF@@")) {
-                    int sep = result.indexOf("@@DIFF@@");
-                    diffDisplay = result.substring(sep + "@@DIFF@@".length());
-                    result = result.substring(0, sep);
-                }
-
-                // Truncate very long results
-                if (result.length() > 50_000) {
-                    result = result.substring(0, 50_000) + "\n[Output truncated at 50KB]";
-                }
-
-                if (diffDisplay != null) {
-                    onText.onText(diffDisplay.stripTrailing() + "\n");
-                } else if ("bash".equals(toolName)) {
-                    onText.onText(formatBashPreview(result) + "\n");
-                } else if ("read".equals(toolName)) {
-                    onText.onText("\n");
-                } else if ("web_search".equals(toolName) || "web_fetch".equals(toolName)) {
-                    onText.onText(formatPreview(result, READ_PREVIEW_LINES) + "\n");
-                } else if ("grep".equals(toolName) || "find".equals(toolName)) {
-                    onText.onText(formatPreview(result, READ_PREVIEW_LINES) + "\n");
-                } else {
-                    onText.onText("\u001b[2m(%d chars)\u001b[0m\n".formatted(result.length()));
-                }
-
-                messages.add(Map.of(
-                        "role", "tool",
-                        "tool_call_id", toolCallId,
-                        "content", result
-                ));
-            }
+            // Execute tool calls — read-only tools run concurrently, write tools sequentially
+            executeToolCalls(toolCalls, onText);
         }
     }
 
@@ -241,6 +228,141 @@ public class AgentSession {
     private static final int BASH_PREVIEW_LINES = 4;
     private static final int READ_PREVIEW_LINES = 10;
     private static final int PREVIEW_MAX_LINE_LEN = 120;
+
+    /**
+     * Execute tool calls with concurrency: read-only tools run in parallel,
+     * write tools run sequentially. Tools are batched by type — consecutive
+     * read-only tools form a concurrent batch, any write tool flushes the batch.
+     */
+    private void executeToolCalls(JsonNode toolCalls, TextCallback onText) {
+        // Parse all tool calls into a list
+        List<ParsedToolCall> parsed = new ArrayList<>();
+        for (JsonNode tc : toolCalls) {
+            String id = tc.get("id").asText();
+            String name = tc.path("function").path("name").asText();
+            String argsStr = tc.path("function").path("arguments").asText("{}");
+            Tool tool = findTool(name);
+            parsed.add(new ParsedToolCall(id, name, argsStr, tool));
+        }
+
+        // Check if ALL tools in this batch are read-only
+        boolean allReadOnly = parsed.stream().allMatch(
+                p -> p.tool != null && p.tool.isReadOnly());
+
+        if (allReadOnly && parsed.size() > 1) {
+            // Execute all read-only tools concurrently using virtual threads
+            executeConcurrently(parsed, onText);
+        } else {
+            // Execute sequentially (safe default for write tools or mixed batches)
+            for (ParsedToolCall ptc : parsed) {
+                executeSingleTool(ptc, onText);
+            }
+        }
+    }
+
+    private void executeConcurrently(List<ParsedToolCall> toolCalls, TextCallback onText) {
+        // Show all tool names first
+        for (ParsedToolCall ptc : toolCalls) {
+            try {
+                JsonNode toolArgs = MAPPER.readTree(ptc.argsStr);
+                onText.onText("\n\u001b[33m[%s]\u001b[0m ".formatted(ptc.name));
+                showToolArgs(ptc.name, toolArgs, onText);
+            } catch (Exception e) {
+                onText.onText("\n\u001b[33m[%s]\u001b[0m ".formatted(ptc.name));
+            }
+        }
+
+        // Execute concurrently with virtual threads
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Map<String, Future<String>> futures = new LinkedHashMap<>();
+            for (ParsedToolCall ptc : toolCalls) {
+                futures.put(ptc.id, executor.submit(() -> {
+                    JsonNode toolArgs = MAPPER.readTree(ptc.argsStr);
+                    if (ptc.tool == null) {
+                        return "Error: Unknown tool: " + ptc.name;
+                    }
+                    return ptc.tool.execute(toolArgs, cwd);
+                }));
+            }
+
+            // Collect results in order and add to messages
+            for (ParsedToolCall ptc : toolCalls) {
+                String result;
+                try {
+                    result = futures.get(ptc.id).get(120, TimeUnit.SECONDS);
+                } catch (Exception e) {
+                    result = "Error: " + e.getMessage();
+                }
+                result = processToolResult(result, ptc.name, onText);
+                messages.add(Map.of(
+                        "role", "tool",
+                        "tool_call_id", ptc.id,
+                        "content", result
+                ));
+            }
+        }
+    }
+
+    private void executeSingleTool(ParsedToolCall ptc, TextCallback onText) {
+        onText.onText("\n\u001b[33m[%s]\u001b[0m ".formatted(ptc.name));
+
+        String result;
+        try {
+            JsonNode toolArgs = MAPPER.readTree(ptc.argsStr);
+            if (ptc.tool == null) {
+                result = "Error: Unknown tool: " + ptc.name;
+            } else {
+                showToolArgs(ptc.name, toolArgs, onText);
+                result = ptc.tool.execute(toolArgs, cwd);
+            }
+        } catch (Exception e) {
+            result = "Error: " + e.getMessage();
+        }
+
+        result = processToolResult(result, ptc.name, onText);
+        messages.add(Map.of(
+                "role", "tool",
+                "tool_call_id", ptc.id,
+                "content", result
+        ));
+    }
+
+    /**
+     * Process a tool result: handle diffs, truncation, and display preview.
+     * Returns the (possibly truncated) result string for the message history.
+     */
+    private String processToolResult(String result, String toolName, TextCallback onText) {
+        // Split off diff display if present
+        String diffDisplay = null;
+        if (result.contains("@@DIFF@@")) {
+            int sep = result.indexOf("@@DIFF@@");
+            diffDisplay = result.substring(sep + "@@DIFF@@".length());
+            result = result.substring(0, sep);
+        }
+
+        // Truncate very long results
+        if (result.length() > 50_000) {
+            result = result.substring(0, 50_000) + "\n[Output truncated at 50KB]";
+        }
+
+        if (diffDisplay != null) {
+            onText.onText(diffDisplay.stripTrailing() + "\n");
+        } else if ("bash".equals(toolName)) {
+            onText.onText(formatBashPreview(result) + "\n");
+        } else if ("read".equals(toolName)) {
+            onText.onText("\n");
+        } else if ("web_search".equals(toolName) || "web_fetch".equals(toolName)) {
+            onText.onText(formatPreview(result, READ_PREVIEW_LINES) + "\n");
+        } else if ("grep".equals(toolName) || "find".equals(toolName)) {
+            onText.onText(formatPreview(result, READ_PREVIEW_LINES) + "\n");
+        } else {
+            onText.onText("\u001b[2m(%d chars)\u001b[0m\n".formatted(result.length()));
+        }
+
+        return result;
+    }
+
+    private record ParsedToolCall(String id, String name, String argsStr, Tool tool) {}
 
     private String formatPreview(String result, int maxLines) {
         if (result.isEmpty()) {
@@ -294,7 +416,7 @@ public class AgentSession {
     }
 
     private int estimateSystemTokens() {
-        return SYSTEM_PROMPT.length() / 4;
+        return systemPrompt.length() / 4;
     }
 
     /**
@@ -376,7 +498,7 @@ public class AgentSession {
         // System message
         ObjectNode sysMsg = messagesArray.addObject();
         sysMsg.put("role", "system");
-        sysMsg.put("content", SYSTEM_PROMPT);
+        sysMsg.put("content", systemPrompt);
 
         // Conversation messages
         for (Map<String, Object> msg : messages) {
@@ -394,8 +516,13 @@ public class AgentSession {
             fn.set("parameters", MAPPER.valueToTree(tool.parameterSchema()));
         }
 
+        String requestJson = MAPPER.writeValueAsString(requestBody);
+
+        // Track input tokens (estimate from request payload)
+        totalInputTokens += Math.max(1, requestJson.length() / 4);
+
         RequestBody body = RequestBody.create(
-                MAPPER.writeValueAsString(requestBody),
+                requestJson,
                 MediaType.parse("application/json")
         );
 
@@ -499,6 +626,13 @@ public class AgentSession {
             onText.onText(thinkBuffer.toString());
         }
 
+        // Track token usage (estimate output tokens from content + tool calls)
+        int outputChars = fullContent.length();
+        for (ToolCallAccumulator acc : toolCallMap.values()) {
+            outputChars += (acc.name != null ? acc.name.length() : 0) + acc.arguments.length();
+        }
+        totalOutputTokens += Math.max(1, outputChars / 4);
+
         // Build final response object
         ObjectNode result = MAPPER.createObjectNode();
         ObjectNode choice = result.putArray("choices").addObject();
@@ -531,6 +665,51 @@ public class AgentSession {
     /** Clear conversation history. */
     public void clearHistory() {
         messages.clear();
+    }
+
+    /**
+     * Compact conversation history by summarizing it via the LLM.
+     * Replaces all messages with a single summary message.
+     */
+    public String compactHistory(TextCallback onText) throws IOException {
+        if (messages.isEmpty()) {
+            return "Nothing to compact.";
+        }
+
+        int preCompactCount = messages.size();
+
+        // Build a summary prompt
+        String summaryRequest = "Summarize the conversation so far in a concise way, " +
+                "preserving key decisions, file paths mentioned, and important context. " +
+                "Be brief but complete. Format as bullet points.";
+
+        // Temporarily add the summary request
+        messages.add(Map.of("role", "user", "content", summaryRequest));
+
+        String summary;
+        try {
+            JsonNode response = callLlm(onText);
+            summary = response.path("choices").path(0).path("message").path("content").asText("");
+        } catch (IOException e) {
+            // Remove the temporary summary request on failure
+            if (messages.size() > preCompactCount) {
+                messages.subList(preCompactCount, messages.size()).clear();
+            }
+            throw e;
+        }
+
+        // Replace all messages with the summary
+        messages.clear();
+        if (!summary.isEmpty()) {
+            messages.add(Map.of("role", "user",
+                    "content", "[Compacted conversation summary]\n" + summary));
+            messages.add(Map.of("role", "assistant",
+                    "content", "I've reviewed the conversation summary. I'm ready to continue. " +
+                            "What would you like to work on next?"));
+        }
+
+        int estimatedTokens = summary.length() / 4;
+        return "Compacted conversation to ~%d tokens.".formatted(estimatedTokens);
     }
 
     @FunctionalInterface

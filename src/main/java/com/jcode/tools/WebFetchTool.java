@@ -24,6 +24,11 @@ public class WebFetchTool implements Tool {
     }
 
     @Override
+    public boolean isReadOnly() {
+        return true;
+    }
+
+    @Override
     public String description() {
         return "Fetch a web page and extract its readable text content. " +
                 "Use this to read documentation pages, API references, blog posts, " +

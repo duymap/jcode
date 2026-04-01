@@ -30,6 +30,11 @@ public class WebSearchTool implements Tool {
     }
 
     @Override
+    public boolean isReadOnly() {
+        return true;
+    }
+
+    @Override
     public String description() {
         return "Search the web using DuckDuckGo. Use this when you need to find documentation, " +
                 "API references, library usage examples, or any information you don't already know. " +

@@ -19,6 +19,11 @@ public class ReadFileTool implements Tool {
     }
 
     @Override
+    public boolean isReadOnly() {
+        return true;
+    }
+
+    @Override
     public String description() {
         return "Read the contents of a file. Supports text files. "
                 + "Use offset and limit for large files.";

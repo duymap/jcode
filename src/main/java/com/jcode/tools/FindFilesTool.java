@@ -23,6 +23,11 @@ public class FindFilesTool implements Tool {
     }
 
     @Override
+    public boolean isReadOnly() {
+        return true;
+    }
+
+    @Override
     public String description() {
         return "Search for files by glob pattern. Respects .gitignore. "
                 + "Returns matching file paths relative to the search directory.";
