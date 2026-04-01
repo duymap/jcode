@@ -1,72 +1,134 @@
-# jcode Improvement Plan
+# Improvement Plan - jcode v0.2.0
 
-Based on analysis of Claude Code source (for-learn-claude-cli) applied to jcode's Java/local-first architecture.
+## Priority 1: Security Hardening (Critical)
 
-## Current State
+### 1.1 Sanitize Command Execution in BashTool
+**File**: `src/main/java/com/jcode/tools/BashTool.java`  
+**Issue**: Line 46 executes commands directly without validation
 
-- Java 21 + picocli + JLine REPL
-- 8 tools (read, write, edit, bash, grep, find, web_search, web_fetch)
-- Basic agent loop with streaming SSE
-- Simple planning extension (reasoning model)
-- Basic context trimming (oldest-first)
-- Config via `~/.jcode/config.json`
-- 3 slash commands (/help, /clear, /exit)
+```java
+// Current (vulnerable):
+ProcessBuilder pb = new ProcessBuilder("bash", "-c", command);
 
----
+// Recommended:
+if (!isValidCommand(command)) {
+    throw new SecurityException("Invalid or dangerous command detected");
+}
+ProcessBuilder pb = new ProcessBuilder("bash", "-c", command);
+```
 
-## Proposed Features (Prioritized)
+**Implementation**: Add whitelist of allowed commands or regex validation for safe patterns. Block dangerous patterns like `rm -rf`, `mkfs`, etc.
 
-### Tier 1 — High Impact, Moderate Effort
+### 1.2 Sanitize Command Execution in AppRunner
+**File**: `src/main/java/com/jcode/tui/AppRunner.java`  
+**Issue**: Line 427 executes user commands directly
 
-| # | Feature | Why | Effort |
-|---|---------|-----|--------|
-| 1 | **Persistent Memory System** | `~/.jcode/memory/` with markdown files. Remember user prefs, project context, feedback across sessions. | Medium |
-| 2 | **Concurrent Tool Execution** | Run read-only tools in parallel, write tools sequentially. Java virtual threads make this natural. | Medium |
-| 3 | **Sub-agent / Forked Agent** | Spawn secondary LLM calls for subtasks without polluting main conversation. | Medium-High |
-| 4 | **Context Compaction** | Summarize conversation instead of just trimming. Preserves important context while freeing tokens. | Medium |
-| 5 | **Permission System** | Granular per-tool permissions: default (ask), readonly, auto (approve safe ops). | Medium |
+```java
+// Add input validation before ProcessBuilder usage
+if (command.matches(".*(;|\\||&&|`|\\$).*")) {
+    throw new SecurityException("Pipe characters not allowed in readonly mode");
+}
+ProcessBuilder pb = new ProcessBuilder("bash", "-c", command);
+```
 
-### Tier 2 — Good Value, Lower Effort
+### 1.3 Sanitize Command Execution in ContextBuilder
+**File**: `src/main/java/com/jcode/ContextBuilder.java`  
+**Issue**: Line 111 executes commands directly
 
-| # | Feature | Why | Effort |
-|---|---------|-----|--------|
-| 6 | **More Slash Commands** | `/commit`, `/diff`, `/cost`, `/compact`, `/status`, `/model` | Low-Medium |
-| 7 | **JCODE.md Support** | Per-project context file injected into system prompt. | Low |
-| 8 | **Layered Error Recovery** | Compact → increase tokens → retry with recovery message. | Medium |
-| 9 | **LSP Integration** | Go-to-definition, find-references, diagnostics for richer code intelligence. | High |
-| 10 | **Improved Diff Rendering** | Word-level diffs, syntax highlighting, file headers with line ranges. | Low |
-
-### Tier 3 — Nice to Have, Higher Effort
-
-| # | Feature | Why | Effort |
-|---|---------|-----|--------|
-| 11 | **MCP Support** | External tool servers for community plugins. | High |
-| 12 | **Git-aware Context Injection** | Auto-inject git status, recent commits, branch info into system prompt. | Low-Medium |
-| 13 | **Session Resume** | Save/restore conversation sessions to disk. | Medium |
-| 14 | **Worktree Isolation** | Run experiments in a git worktree. | Medium |
-| 15 | **Task/Todo System** | Agent breaks work into tasks, tracks progress as a checklist. | Medium |
+Add same validation pattern as BashTool before executing any shell commands.
 
 ---
 
-## Implementation Phases
+## Priority 2: Test Coverage (High)
 
-### Phase 1 — Foundation (most bang for buck)
-- [x] **JCODE.md support** (#7) — Read `JCODE.md` from project root, inject into system prompt
-- [x] **Git-aware context injection** (#12) — Auto-inject git status, branch, recent commits
-- [x] **More slash commands** (#6) — `/compact`, `/commit`, `/diff`, `/model`, `/cost`
-- [x] **Concurrent tool execution** (#2) — Parallel read-only tools via Java virtual threads
+### 2.1 Add Unit Tests for Tool Interface
+**File**: `src/test/java/com/jcode/tools/ToolTest.java`  
+Create base test class for all tools with common assertions.
 
-### Phase 2 — Intelligence
-- [x] **Context compaction** (#4) — Auto-compact at context limit + `/compact` manual trigger
-- [x] **Persistent memory system** (#1) — `~/.jcode/memory/` + MemoryTool + `/memory` command
-- [x] **Permission system** (#5) — AUTO/DEFAULT/BYPASS modes + dangerous command detection
+### 2.2 Implement Specific Tool Tests
+- **ReadFileToolTest**: Test offset, limit, and error handling
+- **WriteFileToolTest**: Test file creation and overwriting
+- **BashToolTest**: Test command execution and timeout handling
+- **GrepToolTest**: Test regex matching patterns
 
-### Phase 3 — Advanced
-- [ ] **Sub-agent support** (#3) — Spawn secondary LLM calls
-- [ ] **Layered error recovery** (#8)
-- [ ] **Session resume** (#13)
+### 2.3 Add Integration Tests for AgentSession
+**File**: `src/test/java/com/jcode/AgentSessionTest.java`  
+Test the LLM ↔ tool execution loop with mock responses.
 
-### Phase 4 — Ecosystem
-- [ ] **LSP integration** (#9)
-- [ ] **MCP support** (#11)
-- [ ] **Task system** (#15)
+---
+
+## Priority 3: Static Analysis (Medium)
+
+### 3.1 Add SpotBugs to pom.xml
+Add dependency and configure in build section:
+```xml
+<plugin>
+    <groupId>com.github.spotbugs</groupId>
+    <artifactId>spotbugs-maven-plugin</artifactId>
+    <version>4.8.6.2</version>
+</plugin>
+```
+
+### 3.2 Add Checkstyle for Code Quality
+Add dependency to enforce coding standards:
+```xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-checkstyle-plugin</artifactId>
+    <version>3.6.0</version>
+</plugin>
+```
+
+### 3.3 Configure CI/CD Pipeline
+Add GitHub Actions workflow to run:
+- `mvn spotbugs:check` on every PR
+- `mvn checkstyle:check` on commit
+- `mvn test` with coverage reporting
+
+---
+
+## Priority 4: Dependency Management (Low)
+
+### 4.1 Add OWASP Dependency Check
+Configure in pom.xml for vulnerability scanning:
+```xml
+<plugin>
+    <groupId>org.owasp</groupId>
+    <artifactId>dependency-check-maven</artifactId>
+    <version>9.0.10</version>
+    <executions>
+        <execution>
+            <goals>
+                <goal>check</goal>
+            </goals>
+        </execution>
+    </executions>
+</plugin>
+```
+
+### 4.2 Regular Dependency Updates
+Set up Dependabot or Renovate for automatic dependency updates.
+
+---
+
+## Implementation Timeline
+
+| Week | Tasks | Priority |
+|------|-------|----------|
+| 1 | Fix BashTool command injection vulnerability | Critical |
+| 1 | Add input validation to AppRunner and ContextBuilder | Critical |
+| 2 | Create base test infrastructure (JUnit 5) | High |
+| 2-3 | Implement unit tests for all Tools | High |
+| 3 | Configure SpotBugs and Checkstyle in pom.xml | Medium |
+| 4 | Set up CI/CD pipeline with automated checks | Medium |
+| 4 | Add OWASP Dependency Check to build process | Low |
+
+---
+
+## Success Metrics
+
+- [ ] Zero high-severity security issues (SpotBugs)
+- [ ] ≥70% test coverage on core modules
+- [ ] Zero new vulnerabilities in dependencies
+- [ ] CI/CD pipeline passes on every commit
+- [ ] No command injection vulnerabilities in shell execution paths
